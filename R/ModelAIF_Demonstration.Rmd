@@ -1,0 +1,659 @@
+---
+title: "ModelAIF_Demonstration"
+author: "Liner Ge"
+date: "7/7/2022"
+output: 
+  html_document:
+    code_folding: hide
+    toc: true
+    toc_float: true
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+library(tidyverse)
+library(knitr)
+library(cowplot)
+library(mgcv)
+library(ggforce)
+library(gnm)
+library(data.table)
+library(scam)
+library(DT)
+library(ggplot2)
+source("functions/kinfitr_gnm.R")
+source("functions/pred_aif.R")
+source("functions/readdata.R")
+source("functions/slice_curve.R")
+source("functions/rising_mod.R")
+source("functions/plotcode.R")
+source("functions/add_bpr.R")
+```
+
+## Aims
+
+Here I would go through the data and demonstrate the models fitting to the data.
+
+## Loading
+
+I saved the pre-prepared AIF data in the Rawdata folder. This dataset consists of 10 patients.
+
+```{r}
+# load data
+filenames = list.files(path = "../Rawdata", pattern="*.csv") ##name of files
+data = tibble(
+  patient = substr(filenames,1,5), #the first 5 character of filenames
+  count = map(filenames,~read.csv(paste0("../Rawdata/", .)) %>% select(-X))
+)
+# find tmax and slice the curve
+data = data %>% 
+  group_by(patient) %>% 
+  mutate(count = map(count,~findtmax(.x)), # the tmax is the one with max aif
+         count_asc = map(count, ~slice_asc(.x)), # data before tmax
+         count_dsc = map(count, ~slice_exp(.x))) # data after tmax and time=time-tmax; t_G=t_G-tmax
+```
+
+## Data
+
+Take the first subject: Patient jdcs1 for example.
+
+### Plot of AIF over time for patient jdcs1
+
+```{r}
+subject_1 = data$count[1]%>% as.data.frame()
+ggplot(subject_1, aes( x = time, y = disp_aif))+
+  geom_point(shape = "diamond", size = 2)+
+  labs(x = "Time", y = "AIF",
+       title = "AIF over time for patient jdcs1")+
+  theme(axis.title.x = element_text(vjust = 0, size = 15),
+        axis.title.y = element_text(vjust = 2, size = 15))+
+  theme_light()
+```
+
+Over time, AIF would sharply goes up and than slowly goes down. We name the time when AIF reaches the peak as $tmax$. For AIF before the peak, we used simple linear regression to model it. We were mainly interested in AIF after the peak. We would use parametric and non-parametric ways to model data after $tmax$.
+
+### Data discribtion
+
+```{r}
+datatable(subject_1)
+```
+- Time : time of drawing blood sample
+- Method : there were two kinds of methods of drawing blood sample. One is automatically drawn and measured by machine, named $Continuous$; the other is drawn by physicians, named $Discrete$
+- Count : count of radio tracers
+- aif : arterial input function
+- backg : backgroud. The measuring instrument needs background correction
+- bpr: blood-to-plasma ratio. We were interested in the counts in plasma, however, the machine could only measure counts in blood. By measuring both counts in plasma and blood in manual samples, we could model blood-to-plasma ratio along with time. Then the bpr was used to correct samples collected by machine.
+- ParentFraction : 
+- dis_frc: used for dispersion correction
+- t_G : time of measuring counts in plasma for manual samples/ counts in blood for automatic samples
+- vol : volumn of the blood sample 
+- delta : time of the blood sample in the gamma tube
+- tmax : the time when AIF reaches the peak
+- disp_aif : arterial input function after dispersion correction
+
+### Offsets
+
+- How we calculate AIF and how we set offsets:
+
+(1) The way we calculate AIF: $disp\_aif = \frac{count\times exp^{\frac{log(2)\times time}{20}}\times 0.037\times (0.07756609407608\times exp^{0.080728586340915\times vol})\times parentFraction}{bpr\times disp\_fct\times delta\times vol}$ 
+
+(2) The way we set offsets: `offset =log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)+(-log(parentFraction))+log(bpr)`
+
+
+name in the offsets code : explanation 
+
+- $delta$ : time in the gamma tube. $Counts$ were divided by $delta$ when we calculated $AIF$.
+- $vol$ : volum of the blood sample. $Counts$ were divided by $vol$ when we calculated $AIF$.
+- $disp\_fct$ : dispersion correction
+- $-log(2)/20.364*t\_G$ : decay correction. The radio tracer in the blood or plasma would keep decaying. We need to correct it back to the time we want. The formula for decay correction : $A_t = A_0 * e ^{-\lambda t}$, where $A_0$ is the original activity count at time zero, $A_t$ is the activity at time $t$, $\lambda$ is the decay constant, and $t$ is the elapsed time.The decay constant is $\frac{ln(2)}{t_{1/2}}$ where $t_{1/2}$ is the half-life of the radioactive material of interest.
+- $(-log(0.003))+(-0.0807*vol)$ : calibration of the machine. The formula for calibration : $Y = 0.037\times0.07756609407608\times exp^{0.080728586340915\times vol}$. $0.037$ is used for transforming units: 1 $picocurie$ $=$ 0.037 $Bq$. 
+- $parentFraction$ : 
+- $bpr$ : blood-to-plasma ratio
+
+## Parametric (tri-exponential) Poisson Regression
+
+```{r}
+
+pare_data = data %>% 
+  group_by(patient) %>% 
+  mutate(asc_res = map(count_asc, ~acs_inter(.x)), # detect t0 and interpolate aif between t0 and tmax
+         count_asc = map(asc_res, ~.x$data), # add t0 to the data
+         asc_mod = map(asc_res, ~.x$segmod), # save model that detecting t0
+         
+         dsc_mod = map(count_dsc, # fit nonlinear poisson regression for descending part
+                       ~kinfitr_gnm(t = .x$time, # time since tmax
+                                    t_G = .x$t_G, # time point put in gamma count since injection time
+                                    y.sum = .x$count, 
+                                    delta = .x$delta, # time in the gamma counter
+                                    vol = .x$vol,
+                                    pf = .x$parentFraction,
+                                    bpr = .x$bpr,
+                                    disp = rep(1,nrow(.x))
+                                    )
+                       ),
+         dsc_mod = map(dsc_mod, ~.x$result), # save model fit data after tmax
+         asc_pred = map(asc_res, ~.x$pred), # get prediction before tmax
+         # get prediction after tmax, contain interpolated aif
+         dsc_pred = map2(dsc_mod,count_dsc,~pred_aif(.x,.y))
+         
+         ) %>% 
+  select(-asc_res)
+```
+
+- <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
+- <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
+- <span style="color:darkorange2">Orange line: the predicted value for parametric regression model</span>
+
+
+```{r}
+for (i in 1:nrow(pare_data)){
+   patient = pare_data$patient[i] 
+
+  data_line = pare_data$count_dsc[i] %>% as.data.frame()
+  
+  para_data = pare_data$dsc_pred[[i]]$rsd %>% as.data.frame()
+  
+  # plot of continuous data
+  con_data = data_line %>% filter(Method == "Continuous")
+  plot(con_data$time, log(con_data$disp_aif), col= "grey",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = paste0("Parametric Regression for patient:", patient))
+  legend(50,5,c("Continuous data"), text.col = "grey",bty = "n")
+  
+  # plot of discrete data
+  dis_data = data_line %>% filter(Method == "Discrete")
+  par(new = TRUE)
+  plot(dis_data$time, log(dis_data$disp_aif), col= "red",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = "")
+  legend(50,4.5,c("Discrete data"), text.col = "red",bty = "n")
+ 
+  # plots of parametric regression
+  par(new = TRUE)
+  plot(para_data$time_dsc, log(para_data$pred), type = "l", col = "darkorange2", lwd = 2,
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(50,4,c("Predicted value"), text.col = "darkorange2",bty = "n")
+  
+}
+```
+
+
+
+## Non-parametric Poisson Regression
+
+For the non-parametric poisson regression, we used $SCAM$ function to achieve monotone decreasing smooths.
+
+```{r}
+poisson_regress = function(data = data, k_value = 15){
+fit_res = scam(count ~ s(time,k = k_value, bs="mpd")+ Method, 
+               offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
+               +(-log(parentFraction))+log(bpr)
+              ,family = poisson(link = "log"), data = data)
+return(fit_res)
+}
+```
+
+Following, we showed fitness for non-parametric poisson regression.
+
+- <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
+- <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
+- <span style="color:darkgreen">Green line: the predicted value for non-parametric poisson regression model with index variable (Method)</span>
+
+
+```{r}
+
+for (i in 1:nrow(data)){
+  patient = data$patient[i] 
+
+  data_line = data$count_dsc[i] %>% as.data.frame()
+  plot_line = data_line %>% poisson_regress()
+  
+  time = data_line$time
+  fitted = log(plot_line$fitted.values)
+  offset = plot_line$model$`(offset)`
+  method = data_line$Method
+  discrete = plot_line$coefficients[2]
+  df = cbind(time, fitted, offset, method, discrete) %>% as.data.frame()
+  
+   test_df = df %>%  
+    mutate(
+      time = as.numeric(time),
+     fitted = as.numeric(fitted),
+      offset = as.numeric(offset),
+     discrete = as.numeric(discrete),
+    aif = fitted - offset
+    )
+   
+   # create a data frame for prediction 
+   pred_data = data_frame(
+     time = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1),
+     Method = "Discrete",
+     delta = 10,
+     vol = 1,
+     disp_fct = 1,
+     t_G = time+7,
+     parentFraction = 0.8,
+     bpr = 1
+   )
+   
+   # predict 10 data points for discrete data at 0.1-1 time intervel 
+   pred_df = predict(plot_line, pred_data) %>% as.data.frame()
+   time_10 = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1)
+   pred_df = cbind(time_10, pred_df)
+   
+   names(pred_df)[1] = "time"
+   names(pred_df)[2] = "aif"
+   
+   dis_df = test_df %>% filter(method == "Discrete") %>% select(time,aif)
+   bind_dis_df = rbind(pred_df, dis_df) %>% mutate(time = as.numeric(time)) %>% arrange(time)
+  
+   con_df = test_df %>% filter(method == "Continuous")
+  
+  # plot of continuous data
+  con_data = data_line %>% filter(Method == "Continuous")
+  plot(con_data$time, log(con_data$disp_aif), col= "grey",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = paste0("Poisson Regression for patient:", patient))
+  legend(50,5,c("Continuous data"), text.col = "grey",bty = "n")
+  
+  # plot of discrete data
+  dis_data = data_line %>% filter(Method == "Discrete")
+  par(new = TRUE)
+  plot(dis_data$time, log(dis_data$disp_aif), col= "red",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = "")
+  legend(50,4.5,c("Discrete data"), text.col = "red",bty = "n")
+  # plots of non-parametric regression
+  
+    par(new = TRUE)
+  plot(bind_dis_df$time,bind_dis_df$aif,
+       type = "l", col = "darkgreen", lwd = 2,
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(50,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+    par(new = TRUE)
+  plot(con_df$time,con_df$aif,
+       type = "l",lty = 2, col = "darkgreen", lwd = 2,
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(50,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+}
+
+```
+### Problem of over-dispersion
+
+Although the predicted value shows poisson regression model fits well, when we plotted the Q-Q plot, it revealed the problem of over-dispersion. 
+
+- <span style="color:red">Red lines: the reference line</span>
+
+- <span style="color:grey">Grey bands: the reference bands </span>
+
+```{r}
+for (i in 1:nrow(data)){
+   patient = data$patient[i] 
+
+  data_line = data$count_dsc[i] %>% as.data.frame()
+  plot_line = data_line %>% poisson_regress()
+  
+   qq.gam(plot_line,rep=500, s.rep = 10, level =1,pch=19,cex=.2, main = "", rl.col = 2)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+  
+}
+```
+
+
+## Non-parametric Model with Negative Binomial distribution
+
+To figure out the problem of over-dispersion, we changed poisson distribution to negative binomial distribution. Because the $SCAM$ function doesn't support negative binomial distribution, we also changed the function to $GAM$.
+
+```{r}
+gam_nb_regress = function(data = data,k_value = 15){
+fit_res = gam(count ~ s(time,k = k_value)+Method, 
+               offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
+               +(-log(parentFraction))+log(bpr)
+              ,family = nb(link = "log"), method="REML",data = data)
+return(fit_res)
+}
+```
+
+- <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
+- <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
+- <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
+
+
+```{r}
+
+for (i in 1:nrow(data)){
+   patient = data$patient[i] 
+
+  data_line = data$count_dsc[i] %>% as.data.frame()
+  plot_line = data_line %>% gam_nb_regress()
+
+  
+  time = data_line$time
+  fitted = log(plot_line$fitted.values)
+  offset = plot_line$offset
+  method = data_line$Method
+
+  df = cbind(time, fitted, offset, method) %>% as.data.frame()
+  
+   test_df = df %>%  
+    mutate(
+      time = as.numeric(time),
+     fitted = as.numeric(fitted),
+      offset = as.numeric(offset),
+    aif = fitted - offset
+    )
+   
+   # create a data frame for prediction
+   pred_data = data_frame(
+     time = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1),
+     Method = "Discrete",
+     delta = 10,
+     vol = 1,
+     disp_fct = 1,
+     t_G = time+7,
+     parentFraction = 0.8,
+     bpr = 1
+   )
+   
+   # predict 10 data points for discrete data at 0.1-1 time intervel 
+   pred_df = predict(plot_line, pred_data) %>% as.data.frame()
+   time_10 = c(0.1,0.2,0.3,0.4,0.5,0.6,0.7,0.8,0.9,1)
+   pred_df = cbind(time_10, pred_df)
+   
+   names(pred_df)[1] = "time"
+   names(pred_df)[2] = "aif"
+   
+   dis_df = test_df %>% filter(method == "Discrete") %>% select(time,aif)
+   bind_dis_df = rbind(pred_df, dis_df) %>% mutate(time = as.numeric(time)) %>% arrange(time)
+  
+   con_df = test_df %>% filter(method == "Continuous")
+  
+  # plot of continuous data
+  con_data = data_line %>% filter(Method == "Continuous")
+  plot(con_data$time, log(con_data$disp_aif), col= "grey",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = paste0("Regression for patient:", patient))
+  legend(50,5,c("Continuous data"), text.col = "grey",bty = "n")
+  
+  # plot of discrete data
+  dis_data = data_line %>% filter(Method == "Discrete")
+  par(new = TRUE)
+  plot(dis_data$time, log(dis_data$disp_aif), col= "red",
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = "")
+  legend(50,4.5,c("Discrete data"), text.col = "red",bty = "n")
+  # plots of non-parametric regression
+  
+    par(new = TRUE)
+  plot(bind_dis_df$time,bind_dis_df$aif,
+       type = "l", col = "darkgreen", lwd = 2,
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(50,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+    par(new = TRUE)
+  plot(con_df$time,con_df$aif,
+       type = "l",lty = 2, col = "darkgreen", lwd = 2,
+       xlab = "time(min)",
+       ylab = "log(AIF)",
+       xlim = c(0,90),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(50,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+
+}
+
+```
+### Solved problem of over-dispersion
+
+- <span style="color:red">Red lines: the reference line</span>
+
+- <span style="color:grey">Grey bands: the reference bands </span>
+
+```{r}
+for (i in 1:nrow(data)){
+   patient = data$patient[i] 
+
+  data_line = data$count_dsc[i] %>% as.data.frame()
+  plot_line = data_line %>% gam_nb_regress()
+  
+  qq.gam(plot_line,rep=500)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+}
+```
+
+## A model across all patients
+
+```{r}
+#Create a dataset for all patients' data
+
+total_data = data_frame()
+
+for(i in 1:nrow(data)){
+patient = data$patient[i] 
+data_line = data$count_dsc[i] %>% as.data.frame()
+p_data = cbind(patient, data_line)
+total_data = rbind(total_data, p_data)
+}
+
+# dataset for manual data only
+discrete_data = total_data %>%mutate(patient = as.factor(patient))%>% filter(Method == "Discrete")
+
+```
+
+```{r}
+gam_total_nb_regress = function(data = data){
+fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"), 
+               offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
+               +(-log(parentFraction))+log(bpr)
+              ,family = nb(link = "log"),data = data,method="REML")
+return(fit_res)
+}
+
+total_data = total_data %>% mutate(
+  patient = as.factor(patient)
+  )
+```
+
+
+```{r}
+total_line = total_data%>% gam_total_nb_regress()
+
+plot(total_line, main = "Regression for all patients")
+```
+
+### Q-Q plot for the model across all patients
+
+```{r}
+ qq.gam(total_line,rep=500)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+```
+
+## Increase Smoothness
+
+By using negative binomial regression, we dealed with the problem of over-dispersion and got model with good fit. However those models were too wiggly. We wanted to increase the smoothness by log-transform $time$.
+
+### Negative Binomial Regression with Log-transformed Time
+
+First, we added back tmax for all patients' data. Then, we log-transformed time value and fit the model. Following shows the regression model, residual plot, and how the model fitted. 
+
+- <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
+- <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
+- <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
+
+```{r}
+tmax = c() 
+nrow = c()
+patients = c()
+for(i in 1:nrow(data)){
+   patient = data$patient[i] 
+
+  patient_data = data$count_dsc[i]%>% as.data.frame()%>% mutate(
+                      tmax = as.numeric(tmax),
+                      time = as.numeric(time)
+                      )
+  patient_tmax = mean(patient_data$tmax)
+  number = nrow(patient_data)
+  patients = rbind(patients,patient)
+  tmax = rbind(tmax, patient_tmax)
+  nrow = rbind(nrow,number)
+  # transform time : time =ln(time + tmax)
+  time_data = patient_data %>% mutate(time = log(time+tmax))
+  
+  plot_line = time_data %>% gam_nb_regress()
+  
+  # plot of the model
+ par(mfrow = c(1,1))
+   plot(plot_line,
+       shade=F, # confidence bands for smooth
+       se=F,
+       lwd = 1.5,
+      main = paste0("Regression for patient:", patient))
+   # Q-Q plot
+  qq.gam(plot_line,rep=500)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+  
+  # plot of predicted value
+  time = time_data$time
+  fitted = log(plot_line$fitted.values)
+  offset = plot_line$offset
+  method = time_data$Method
+
+  df = cbind(time, fitted, offset, method) %>% as.data.frame() %>% mutate(
+    fitted = as.numeric(fitted),
+    offset = as.numeric(offset),
+    aif = fitted-offset
+  )
+  con_df = df %>% filter(method == "Continuous")
+  dis_df = df %>% filter(method == "Discrete")
+  
+  par(mfrow = c(1,1))
+  con_data = time_data %>% filter(Method == "Continuous")
+  plot(con_data$time, log(con_data$disp_aif), col= "grey",
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = paste0("Regression for patient:", patient))
+  legend(3,5,c("Continuous data"), text.col = "grey",bty = "n")
+  
+  # plot of discrete data
+  dis_data = time_data %>% filter(Method == "Discrete")
+  par(new = TRUE)
+  plot(dis_data$time, log(dis_data$disp_aif), col= "red",
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = "")
+  legend(3,4.5,c("Discrete data"), text.col = "red",bty = "n")
+  # plots of non-parametric regression
+  
+    par(new = TRUE)
+  plot(con_df$time,con_df$aif,
+       type = "l",lty = 2, col = "darkgreen", lwd = 2,
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(3,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+    par(new = TRUE)
+  plot(dis_df$time,dis_df$aif,
+       type = "l", col = "darkgreen", lwd = 2,
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(3,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+
+}
+
+table = cbind(patients, tmax, nrow) %>% as.tibble()
+colnames(table) = c("Patient", "Tmax", "Number_of_data")
+table
+```
+### A model across all patients with log-transformed time
+
+We found the mean of tmax for all patients and added back tmax for all patients' data.
+
+```{r}
+table = table %>% mutate(
+  Tmax = as.numeric(Tmax),
+  Number_of_data = as.numeric(Number_of_data),
+  sum = Tmax*Number_of_data
+)
+
+mean_tmax = sum(table$sum)/sum(table$Number_of_data)
+```
+
+```{r}
+total_data = data_frame()
+
+for(i in 1:nrow(data)){
+patient = data$patient[i] 
+data_line = data$count_dsc[i] %>% as.data.frame()
+p_data = cbind(patient, data_line)
+total_data = rbind(total_data, p_data)
+}
+
+total_data = total_data %>% mutate(
+  patient = as.factor(patient),
+  time = log(time+mean_tmax)
+  )
+
+```
+
+```{r}
+total_line = total_data%>% gam_total_nb_regress()
+plot(total_line, main = "Regression for all patients")
+qq.gam(total_line,rep=500)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+```

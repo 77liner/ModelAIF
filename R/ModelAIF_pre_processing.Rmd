@@ -1,0 +1,301 @@
+---
+title: "Pre-processing"
+author: "Liner Ge"
+date: "7/19/2022"
+output: 
+  html_document:
+    toc: true
+    toc_float: true
+    theme: cerulean
+---
+
+```{r setup, include=FALSE}
+knitr::opts_chunk$set(echo = TRUE)
+
+library(tidyverse)
+library(kinfitr)
+library(knitr)
+library(cowplot)
+library(mgcv)
+library(ggforce)
+library(gnm)
+source("functions/add_bpr.R")
+```
+
+# Pre-processing
+
+### How to calculate Blood-to-plasma ratio
+
+- Do decay correction and measuring calibration on both plasma and blood data
+- Decay correction : $Decay\_corrected\_count = count \times e ^{log(2)\times(t-t_0)/20}$
+- Measuring calibration : $Measure\_corrected\_count = Decay\_corrected\_count \times 0.037\times0.07756609407608\times exp^{0.080728586340915\times volume}$
+- Calculate concentration : $Concentration = Measure\_corrected\_count/volume$
+- Blood-to-plasma ratio : $bpr = blood\_concentration/plasma\_concentration$
+
+```{r , warning = FALSE}
+#tidy_data : change time into minutes; rename columns; calculate blood-to-plasma ratio
+
+tidy_data <- function(df, filenm){
+  df1 = df %>% 
+    janitor::clean_names() %>% 
+    select(-c(2,3)) %>% 
+    drop_na() %>% 
+    mutate(
+      time = time_of_sampling_min+time_of_sampling_sec/60,
+      bld_time = time_min_6+time_sec_7/60,
+      pls_time = time_min_10+time_sec_11/60
+      #, patient = rep(filenm,nrow(.))
+    ) %>% 
+    rename(bld_vol = volume_m_l_8,
+           pls_vol = volume_m_l_12,
+           bld_count = counts_9,
+           pls_count = counts_13,
+           measur_time = measur_time_sec,
+           bld_calfac = cal_factor_exp_15,
+           bld_nci = n_ci_cc_exp_16,
+           pls_calfac = cal_factor_exp_17,
+           pls_nci = n_ci_cc_exp_18) %>% 
+    mutate(pls_count_decay = pls_count*exp(log(2)/20*(pls_time-time)),
+           pls_count_perml = pls_count_decay/pls_vol,
+           pls_conc = pls_count_decay*0.037/measur_time/pls_vol*(0.07756609407608*exp(0.080728586340915*pls_vol)),
+           bld_conc = bld_count*exp(log(2)/20*(bld_time-time))*0.037/measur_time/bld_vol*(0.07756609407608*exp(0.080728586340915*bld_vol)),
+           bpr = bld_conc/pls_conc) %>%  # Calculate count at time of sampling, since plasma time is different from sampling time
+    select(starts_with("radio"),time,starts_with("bld"),starts_with("pls"),measur_time,bpr)
+  return(df1)
+  
+}
+```
+
+## Excel data
+
+Original manual(Discrete) data contains in $releasedat\_fixed$ in $Rawdata$ file. Original automatic(Continuous) data contains in $releasedat\_fixed\_abss$ in $Rawdata$ file. 
+
+
+### Manual data
+
+For manual data, get bpr, background, t_G (time of measuring plasma), time (time of sampling), and vol (volme of plasma)
+
+```{r , warning = FALSE}
+# Manual data
+filenames = dir("../Rawdata/releasedat_fixed", pattern = "*.xls") %>% str_replace(".xls","")
+count_df <-list()
+for (i in 1:length(filenames)) {
+   df = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", filenames[i],".xls"), range = "A9:R23"))
+  count_df[[filenames[i]]] <- tidy_data(df,filenames[i])
+}
+
+# Background in Manual data 
+bkgcount_df <- list()
+for (i in 1:length(filenames)) {
+   bkgcount_df[[filenames[i]]] = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", filenames[i],".xls")))[39,9] %>% as.numeric()
+}
+bkgcount = bkgcount_df %>% unlist()
+
+#get t_G
+count_df_tG <-list()
+for (i in filenames) {
+   count_df_tG[[i]] = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", i,".xls"), range = "J9:K23")) %>% 
+     janitor::clean_names() %>%  
+     mutate(tG = time_min+time_sec/60) %>% 
+     select(tG)
+}
+# get time, volume of plasma
+count_df_vol <-list()
+for (i in filenames) {
+   count_df_vol[[i]] = data.frame(vol = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", i,".xls"), range = "L9:L23")),time_min = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", i,".xls"), range = "D9:D23")),time_sec = suppressMessages(readxl::read_excel(paste0("../Rawdata/releasedat_fixed/", i,".xls"), range = "E9:E23"))) %>% 
+     janitor::clean_names() %>% 
+     mutate(time = time_of_sampling_min + time_of_sampling_sec/60) %>% 
+     rename(vol = volume_m_l) %>% 
+     select(vol, time)
+}
+```
+
+### Automatic data
+
+```{r , warning = FALSE}
+filenames1 = dir("../Rawdata/releasedat_fixed_abss", pattern = "*.txt") %>% str_replace(".txt","")
+count_df_abss1 <-list()
+for (i in 1:length(filenames1)) {
+   df = suppressMessages(read.table(paste0("../Rawdata/releasedat_fixed_abss/", filenames1[i],".txt"), skip = 16, fill  = TRUE)[,1:5])
+   colnames(df) = c("abs_time1","abs_time2","time","singles","coincidents")
+   df = df %>% mutate(time = as.numeric(time),
+                      singles = as.numeric(singles),
+                      coincidents = as.numeric(coincidents),
+                      bld_conc = singles*exp(log(2)/20*time/60)*0.037/1/5*60*(0.07756609407608*exp(0.080728586340915*5/60)))
+   time_stamp = as.numeric(df[which(df=="stamps", arr.ind=TRUE)+c(2,1)])
+   backg = mean(as.numeric(df[(time_stamp):(time_stamp+19),4]))
+   count_df_abss1[[str_replace(filenames1[i],"_abss","")]] = list(df=df,timestamp = time_stamp,bkg = backg)
+}
+
+findtmax <- function(all){
+  all$df = all$df %>% drop_na()
+  tend = all$timestamp+599
+  newdf = filter(all$df,between(time,all$timestamp,tend)) %>% mutate(time = 1:n())
+  return(newdf)
+}
+
+df1 = map(count_df_abss1,
+          ~findtmax(.x))
+#final data
+count_df_abss = map2(count_df_abss1,df1,~list(df = .y, timestamp = .x$timestamp, bkg = .x$bkg))
+```
+
+
+## kinfitr data
+
+For the dispersion correction and Parentfraction, please refer to [kinfitr](https://github.com/mathesong/kinfitr).
+
+- Download data in [kinfitr](https://github.com/mathesong/kinfitr). 
+- Do dispersion correction (using $bd\_blood\_dispcor$ function in kinfitr)
+- Git bpr(using $bd\_addfit$ function in kinfitr) and Parentfraction(using $bd\_extract$ function in kinfitr)
+
+```{r 2, warning = FALSE}
+data(pbr28)
+
+# the patients we are going to look into
+pbr281 = pbr28
+pbr28org = pbr28
+patient = c("jdcs1", "jdcs2", "mhco1", "mhco2","ytdh2",  "rwrd1", "rwrd2",  "xehk1", "xehk2", "ytdh1")
+
+pbr28 <- pbr28  %>% 
+  mutate(PET = str_replace(PET,"_","")) %>% 
+  filter(PET %in% patient) %>% 
+  select(-procblood, -input, -Genotype, -injRad, -tactimes, -petinfo)
+
+# calculate pre/post dispersion correction
+get_disp_fac <- function(i, data = pbr28org){
+  pre = data$blooddata[[which(str_replace(data$PET,"_","")==i)]]$Data$Blood$Continuous$Values
+  data <- data %>%
+    mutate(blooddata = map(blooddata,
+                           ~bd_blood_dispcor(.x)))
+  post = data$blooddata[[which(str_replace(data$PET,"_","")==i)]]$Data$Blood$Continuous$Values
+  factor = left_join(pre,post,by = "time") %>% mutate(disp_fct = activity.x/activity.y)
+  return (factor)
+}
+
+
+all_fct<-NULL
+for (i in patient) {
+  all_fct[[i]]= get_disp_fac(i)
+}
+# did dispersion correction
+pbr28 <- pbr28 %>%
+  mutate(blooddata = map(blooddata,
+                         ~bd_blood_dispcor(.x)))
+# get BPR and pf
+pbr28 <- pbr28 %>% 
+  group_by(PET) %>% 
+  mutate(pfdat = map(blooddata, 
+                ~bd_extract(.x, output = "parentFraction")),
+         hillguomodel = map(pfdat,
+                ~metab_hill(.x$time, .x$parentFraction, multstart_iter = 100)),
+         blooddata = map2(blooddata, hillguomodel,
+                ~bd_addfit(.x, .y, modeltype = "parentFraction"))) %>% 
+  mutate(bprdat = map(blooddata, 
+                ~bd_extract(.x, output = "BPR")),
+         bprmodel = map(bprdat,
+                ~gam(bpr ~ s(time), data=.x)),
+         blooddata = map2(blooddata, bprmodel,
+                ~bd_addfit(.x, .y, modeltype = "BPR")))
+
+```
+
+## Manage Excel data
+
+Combined Excel data with data from kinfitr
+
+### For Manual Data
+
+- Use count(measured count - background), volume, t_G(time of measuring plasma), background in excel data and blood, parentFraction, plasma_uncor, aif in kinfitr data, combining them by time(time of sampling).
+
+- Remove samples with time of sampling less than 1 minute
+
+- Set $dis\_fct=1$(dispersion correction), $delta=10$(time in the gamma tube), $Method = Discrete$ 
+
+### For Automatic Data
+
+- Use count(measured count - background), background in excel data and blood, parentFraction, disp_fct, aif, bpr in kinfitr data, combining them by time(time of sampling).
+
+- Change time into minutes
+
+- Set $Volume = 5/60$, $delta=1$, $Method = Conutious$, $t\_G = time$
+
+
+```{r, warning = FALSE, message = FALSE}
+conc_all1 <- NULL
+
+#i = "ytdh1"
+for(i in patient){
+  AIF = bd_extract(pbr28$blooddata[[which(str_replace(pbr28$PET,"_","")==i)]], output = "AIF") %>% 
+    select(!bpr)
+  AIF_dis = AIF %>%
+    filter(Method=="Discrete") %>%
+    mutate(time = time/60) %>% 
+    left_join(count_df[[i]],by = "time") %>% 
+    left_join(count_df_vol[[i]],by = "time") %>% 
+    add_column(disp_fct = 1) %>% 
+    mutate(t_G = count_df_tG[[i]]$tG,
+           delta = 10,
+           count = pls_count,
+           backg = bkgcount_df[[i]],
+           count = count-backg) %>%
+    filter(time > 1) %>% 
+    select(!(radioactivity_metabolite:measur_time)) %>% 
+    select(!bpr) %>% 
+    drop_na()
+  # AIF_cont =AIF %>% 
+  #   filter(Method=="Continuous") %>% 
+  #   mutate(t_G = time/60,
+  #          delta = 1,
+  #          vol = 1, ## ????
+  #          time = time/60,
+  #          count = )
+  AIF_count =AIF %>% 
+    filter(Method=="Continuous") %>% 
+    left_join(count_df_abss[[i]]$df,by = "time") %>% 
+    left_join(all_fct[[i]],by="time") %>% 
+    mutate(t_G = time/60,
+           delta = 1,
+           vol = 5/60, ## Plasma makes up about 58% of the blood volume
+           time = time/60,
+           count = singles,
+           backg = count_df_abss[[i]]$bkg,
+           count = count-backg) %>%  # blood to plasma and background
+    select(!(abs_time1:activity.y)) %>% drop_na()
+  # AIF_dis;AIF_count
+  
+  conc_all1[[i]] = rbind(AIF_dis,AIF_count) %>% 
+    as.data.frame() %>% 
+    arrange(time) %>% 
+    rename(kinfitr_aif = aif)
+}
+
+
+conc_all <- NULL
+for (i in patient) {
+  conc_all[[i]] = add_bpr(count_df[[i]],conc_all1[[i]]) %>% add_conc() %>% 
+    mutate(tmax = time[which(aif == max(aif))], # find tmax
+           count = round(ifelse(count<0,0,count))) # round count
+}
+```
+
+## Output data
+
+- Time : time of sampling
+- Method : there were two kinds of methods of drawing blood sample. One is automatically drawn and measured by machine, named $Continuous$; the other is drawn by physicians, named $Discrete$
+- Count : count of radio tracers (Measured count - background)
+- aif : arterial input function
+- backg : backgroud. The count needs background correction
+- bpr: blood-to-plasma ratio. We were interested in the counts in plasma, however, the machine could only measure counts in blood. By measuring both counts in plasma and blood in manual samples, we could model blood-to-plasma ratio along with time. Then the bpr was used to correct samples collected by machine.
+- ParentFraction : 
+- dis_frc: used for dispersion correction
+- t_G : time of measuring counts in plasma for manual samples/ counts in blood for automatic samples
+- vol : volumn of the blood sample 
+- delta : time of the blood sample in the gamma tube
+- tmax : the time when AIF reaches the peak
+- disp_aif : arterial input function after dispersion correction
+
+```{r, warning = FALSE}
+data_output = map(conc_all,~select(.x, time, Method, blood,count, aif, disp_aif, backg, bpr, parentFraction, disp_fct, t_G, vol, delta, tmax))
+```
+

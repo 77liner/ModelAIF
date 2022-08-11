@@ -10,6 +10,16 @@ output:
     theme: cerulean
 ---
 
+# Aims
+
+Here I aim to demonstrate the use of our work to model the arterial input function for PET imaging using count data. Firstly, I will go through how we arrange the data ready for these models.  Next, I will demonstrate the application of each model to this data.
+
+
+# Preparation
+
+## Libraries
+
+
 ```{r setup, include=FALSE}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
@@ -22,22 +32,19 @@ library(data.table)
 library(scam)
 library(DT)
 library(ggplot2)
-source("functions/kinfitr_gnm.R")
-source("functions/pred_aif.R")
-source("functions/readdata.R")
-source("functions/slice_curve.R")
-source("functions/rising_mod.R")
-source("functions/plotcode.R")
-source("functions/add_bpr.R")
 ```
 
-## Aims
+We'll also load the model functions as well as some helper functions which we'll use along the way.
 
-Here I would go through the data and demonstrate the models fitting to the data.
+```{r}
+source("model_functions.R")
+source("helper_functions.R")
+```
 
-## Loading
 
-I saved the pre-prepared AIF data in the Rawdata folder. This dataset consists of 10 patients.
+## Loading data
+
+I have saved the prepared AIF data in the Rawdata folder. This dataset consists of 10 patients.
 
 ```{r}
 # load data
@@ -46,22 +53,51 @@ data = tibble(
   patient = substr(filenames,1,5), #the first 5 character of filenames
   count = map(filenames,~read.csv(paste0("../Rawdata/", .)) %>% select(-X))
 )
-# find tmax and slice the curve
-data = data %>% 
-  group_by(patient) %>% 
-  mutate(count = map(count,~findtmax(.x)), # the tmax is the one with max aif
-         count_asc = map(count, ~slice_asc(.x)), # data before tmax
-         count_dsc = map(count, ~slice_exp(.x))) # data after tmax and time=time-tmax; t_G=t_G-tmax
 ```
 
-## Data
 
-Take the first subject: Patient jdcs1 for example.
+# Data
 
-### Plot of AIF over time for patient jdcs1
+## General Approach
+
+Conventionally, modelling of the input function is performed by converting all the count data into radioactivity.  We also estimate values of the whole-blood-to-plasma ratio (BPR) using blood radioactivity and plasma radioactivity values, which are either modelled or interpolated from a few data points. We also estimate values of the plasma parent fraction using measured values, which are either interpolated or modelled.  
+
+In this approach, we model the input function using the original count data, i.e. before converting the data to radioactivity. However, we still require estimates of the BPR and parent fraction over time.  For this reason, the data must firstly be processed in a conventional manner with radioactivity to derive estimates of the BPR and plasma parent fraction, as well as for assessing the effects of dispersion correction.  
+
+In the data below, then, there will both be count data, as well as processed data generated using the counts data converted to radioactivity.  The strategy of this model is to make use of the counts data to allow a us to model the data with a more correct error distribution, but this requires first processing the data in a more conventional manner, and using the counts once again when applying the model itself.
+
+GJM: I think it's worth spending a little bit of time before here discussing how the BPR, dispersion correction and AIF columns are all based on conventional modelling of the data, i.e. after transforming the counts to radioactivity and doing all the conventional corrections, rather than being with the counts directly. We basically do all the conventional things with the blood data in radioactivity units (i.e. after being corrected from counts), and then when it comes time to model the data, then we use the raw counts again.  I think it's important to explain this just so that readers understand *why* the data have all these columns etc, many of which are related to the radioactivity and not the counts, which they thought were going to be the main focus.  I've quickly written a short approximate description above.  Do feel free to revise it and customise as you desire.
+
+
+## Example Data
+
+We'll start out by looking at one of the individuals within the dataset.  The data is as follows:
 
 ```{r}
 subject_1 = data$count[1]%>% as.data.frame()
+
+datatable(subject_1)
+```
+
+- **Time** : time of drawing blood sample (i.e. not of measurement of radioactivity).
+- **Method** : there were two kinds of methods of drawing blood sample. One is automatically drawn and measured by an autosampler machine, named $Continuous$; the other is drawn manually, named $Discrete$.
+- **Count** : the number of recorded counts from the gamma counter.
+- **aif** : arterial input function estimated in the conventional manner.
+- **backg** : backgroud. The measuring instrument needs background correction, and this is the estimated background radioactivity (GJM: units? Counts/time?).
+- **bpr**: blood-to-plasma ratio. We were interested in the counts in plasma, however, the machine could only measure counts in blood. By measuring both radioactivity in plasma and blood in manual samples, we model blood-to-plasma ratio along with time. Then the bpr was used to correct samples collected by machine.
+- **ParentFraction** : The fraction of radioactivity originating from the parent compound, and not from radioactive daughter compounds (i.e. metabolites).
+- **dis_frc**: used for dispersion correction. Dispersion correction is calculated as a fraction multiplier for each time point using the original and corrected AIF radioactivity values. In this way, we incorporate dispersion correction into the count model.
+- **t_G** : time of measuring counts in plasma for manual samples/counts in blood for automatic samples (i.e. not of drawing the blood sample).
+- **vol** : volume of the blood sample. (GJM: I presume this is the volume of the plasma sample when it's plasma instead though, right?)
+- **delta** : duration for which the sample is in the gamma tube (i.e. longer duration results in more counts).
+- **tmax** : the time when AIF reaches the peak.
+- **disp_aif** : arterial input function after dispersion correction.
+
+
+Here I will plot the AIF calculated in the conventional manner, after transforming arterial blood measurements to their respective arterial plasma estimates using the blood-to-plasma ratio, and transforming arterial plasma values to their respective metabolite-corrected estimates using the plasma parent fraction.
+
+
+```{r}
 ggplot(subject_1, aes( x = time, y = disp_aif))+
   geom_point(shape = "diamond", size = 2)+
   labs(x = "Time", y = "AIF",
@@ -71,50 +107,49 @@ ggplot(subject_1, aes( x = time, y = disp_aif))+
   theme_light()
 ```
 
-Over time, AIF would sharply goes up and than slowly goes down. We name the time when AIF reaches the peak as $tmax$. For AIF before the peak, we used simple linear regression to model it. We were mainly interested in AIF after the peak. We would use parametric and non-parametric ways to model data after $tmax$.
 
-### Data discribtion
+
+As we can see, the AIF rises sharply, and then slowly descends. We name the time when AIF reaches the peak as $tmax$. For AIF before the peak, we used simple linear regression to model it. We were mainly interested in AIF after the peak. We would use parametric and non-parametric ways to model data after $tmax$.  For this reason, we split the curve into ascent (asc) and descent (dsc).
 
 ```{r}
-datatable(subject_1)
+# find tmax and slice the curve
+data = data %>% 
+  group_by(patient) %>% 
+  mutate(count = map(count,~findtmax(.x)), # the tmax is the one with max aif
+         count_asc = map(count, ~slice_asc(.x)), # data before tmax
+         count_dsc = map(count, ~slice_exp(.x))) # data after tmax and time=time-tmax; t_G=t_G-tmax
 ```
-- Time : time of drawing blood sample
-- Method : there were two kinds of methods of drawing blood sample. One is automatically drawn and measured by machine, named $Continuous$; the other is drawn by physicians, named $Discrete$
-- Count : count of radio tracers
-- aif : arterial input function
-- backg : backgroud. The measuring instrument needs background correction
-- bpr: blood-to-plasma ratio. We were interested in the counts in plasma, however, the machine could only measure counts in blood. By measuring both counts in plasma and blood in manual samples, we could model blood-to-plasma ratio along with time. Then the bpr was used to correct samples collected by machine.
-- ParentFraction : 
-- dis_frc: used for dispersion correction
-- t_G : time of measuring counts in plasma for manual samples/ counts in blood for automatic samples
-- vol : volumn of the blood sample 
-- delta : time of the blood sample in the gamma tube
-- tmax : the time when AIF reaches the peak
-- disp_aif : arterial input function after dispersion correction
 
-### Offsets
 
-- How we calculate AIF and how we set offsets:
+
+# Modelling
+
+
+## Offsets
+
+For regression of count data, we use offsets in the model to describe, for instance, if a sample spends longer in the counter, in which case more counts will be recorded.
+
 
 (1) The way we calculate AIF: $disp\_aif = \frac{count\times exp^{\frac{log(2)\times time}{20}}\times 0.037\times (0.07756609407608\times exp^{0.080728586340915\times vol})\times parentFraction}{bpr\times disp\_fct\times delta\times vol}$ 
 
-(2) The way we set offsets: `offset =log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)+(-log(parentFraction))+log(bpr)`
+(2) The way we set offsets in the code: `offset =log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)+(-log(parentFraction))+log(bpr)`
 
 
-name in the offsets code : explanation 
+This is a bit complicated to follow. Let's break that down:
 
-- $delta$ : time in the gamma tube. $Counts$ were divided by $delta$ when we calculated $AIF$.
-- $vol$ : volum of the blood sample. $Counts$ were divided by $vol$ when we calculated $AIF$.
+- $delta$ : time in the gamma counter. $Counts$ were divided by $delta$ when we calculated $AIF$.
+- $vol$ : volume of the blood sample. $Counts$ were divided by $vol$ when we calculated $AIF$.
 - $disp\_fct$ : dispersion correction
 - $-log(2)/20.364*t\_G$ : decay correction. The radio tracer in the blood or plasma would keep decaying. We need to correct it back to the time we want. The formula for decay correction : $A_t = A_0 * e ^{-\lambda t}$, where $A_0$ is the original activity count at time zero, $A_t$ is the activity at time $t$, $\lambda$ is the decay constant, and $t$ is the elapsed time.The decay constant is $\frac{ln(2)}{t_{1/2}}$ where $t_{1/2}$ is the half-life of the radioactive material of interest.
-- $(-log(0.003))+(-0.0807*vol)$ : calibration of the machine. The formula for calibration : $Y = 0.037\times0.07756609407608\times exp^{0.080728586340915\times vol}$. $0.037$ is used for transforming units: 1 $picocurie$ $=$ 0.037 $Bq$. 
-- $parentFraction$ : 
-- $bpr$ : blood-to-plasma ratio
+- $(-log(0.003))+(-0.0807*vol)$ : volume calibration of the gamma counter. The formula for calibration : $Y = 0.037\times0.07756609407608\times exp^{0.080728586340915\times vol}$. $0.037$ is used for transforming units: 1 $picocurie$ $=$ 0.037 $Bq$. 
+- $parentFraction$ : the estimated metabolite free fraction at each time point
+- $bpr$ : the estimated blood-to-plasma ratio at each time point. This is set to 1 for all plasma measurements, and only used for the whole blood measurements which are corrected to their estimated plasma values.
 
-## Parametric (tri-exponential) Poisson Regression
+
+
+## 1. Parametric (tri-exponential) Poisson Regression
 
 ```{r}
-
 pare_data = data %>% 
   group_by(patient) %>% 
   mutate(asc_res = map(count_asc, ~acs_inter(.x)), # detect t0 and interpolate aif between t0 and tmax
@@ -191,9 +226,9 @@ for (i in 1:nrow(pare_data)){
 
 
 
-## Non-parametric Poisson Regression
+## 2. Non-parametric Poisson Regression
 
-For the non-parametric poisson regression, we used $SCAM$ function to achieve monotone decreasing smooths.
+For the non-parametric poisson regression, we used $SCAM$ function to achieve monotone decreasing smooths.  We also added a covariate to account for the discrepancy observed between discrete and continuous data.  
 
 ```{r}
 poisson_regress = function(data = data, k_value = 15){
@@ -209,7 +244,7 @@ Following, we showed fitness for non-parametric poisson regression.
 
 - <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
 - <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
-- <span style="color:darkgreen">Green line: the predicted value for non-parametric poisson regression model with index variable (Method)</span>
+- <span style="color:darkgreen">Green line: the predicted value for non-parametric poisson regression model with index variable (Method). The dashed line shows the predicted values for the continuous data, while the solid line shows the predicted values for the discrete data. We consider the discrete data to represent the relevant data-generating process, and the continuous data is less reliable owing to some factor. In this study, it was speculated that the continuous sampler may have been placed too close to participants' bodies, resulting in extra counts´.</span>
 
 
 ```{r}
@@ -308,6 +343,9 @@ for (i in 1:nrow(data)){
 }
 
 ```
+
+
+
 ### Problem of over-dispersion
 
 Although the predicted value shows poisson regression model fits well, when we plotted the Q-Q plot, it revealed the problem of over-dispersion. 
@@ -330,9 +368,9 @@ for (i in 1:nrow(data)){
 ```
 
 
-## Non-parametric Model with Negative Binomial distribution
+## 3. Non-parametric Model with Negative Binomial distribution
 
-To figure out the problem of over-dispersion, we changed poisson distribution to negative binomial distribution. Because the $SCAM$ function doesn't support negative binomial distribution, we also changed the function to $GAM$.
+To resolve the problem of over-dispersion, we changed poisson distribution to negative binomial distribution. Because the $SCAM$ package does not support negative binomial distribution, we also changed the function to $GAM$ from the `mgcv` package.  However, this means that our non-parametric model is no longer shape-constrained.
 
 ```{r}
 gam_nb_regress = function(data = data,k_value = 15){
@@ -464,60 +502,67 @@ for (i in 1:nrow(data)){
 }
 ```
 
-## A model across all patients
+### Problem of excessive wiggliness
 
-```{r}
-#Create a dataset for all patients' data
+While this model appears to have resolved the issue of the over-dispersion, we were dissatisfied with the fits, as they seem to be overfitting, with upward deviations along what we would expect to a practically monotonic descent.
 
-total_data = data_frame()
-
-for(i in 1:nrow(data)){
-patient = data$patient[i] 
-data_line = data$count_dsc[i] %>% as.data.frame()
-p_data = cbind(patient, data_line)
-total_data = rbind(total_data, p_data)
-}
-
-# dataset for manual data only
-discrete_data = total_data %>%mutate(patient = as.factor(patient))%>% filter(Method == "Discrete")
-
-```
-
-```{r}
-gam_total_nb_regress = function(data = data){
-fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"), 
-               offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
-               +(-log(parentFraction))+log(bpr)
-              ,family = nb(link = "log"),data = data,method="REML")
-return(fit_res)
-}
-
-total_data = total_data %>% mutate(
-  patient = as.factor(patient)
-  )
-```
+To this end, we log-transformed time within the model in order to distribute the basis functions more evenly across the curve, with respect to both the number of measurements as well as the expected wiggliness (i.e. second derivative) of the curve.  First, we added back tmax for all patients' data. Then, we log-transformed time value and fit the model. Following shows the regression model, residual plot, and how the model fitted. 
 
 
-```{r}
-total_line = total_data%>% gam_total_nb_regress()
+<!-- ## A model across all patients -->
 
-plot(total_line, main = "Regression for all patients")
-```
+<!-- ```{r} -->
+<!-- #Create a dataset for all patients' data -->
 
-### Q-Q plot for the model across all patients
+<!-- total_data = data_frame() -->
 
-```{r}
- qq.gam(total_line,rep=500)
- mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
-```
+<!-- for(i in 1:nrow(data)){ -->
+<!-- patient = data$patient[i]  -->
+<!-- data_line = data$count_dsc[i] %>% as.data.frame() -->
+<!-- p_data = cbind(patient, data_line) -->
+<!-- total_data = rbind(total_data, p_data) -->
+<!-- } -->
 
-## Increase Smoothness
+<!-- # dataset for manual data only -->
+<!-- discrete_data = total_data %>%mutate(patient = as.factor(patient))%>% filter(Method == "Discrete") -->
 
-By using negative binomial regression, we dealed with the problem of over-dispersion and got model with good fit. However those models were too wiggly. We wanted to increase the smoothness by log-transform $time$.
+<!-- ``` -->
 
-### Negative Binomial Regression with Log-transformed Time
+<!-- ```{r} -->
+<!-- gam_total_nb_regress = function(data = data){ -->
+<!-- fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"), -->
+<!--                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol) -->
+<!--                +(-log(parentFraction))+log(bpr) -->
+<!--               ,family = nb(link = "log"),data = data,method="REML") -->
+<!-- return(fit_res) -->
+<!-- } -->
 
-First, we added back tmax for all patients' data. Then, we log-transformed time value and fit the model. Following shows the regression model, residual plot, and how the model fitted. 
+<!-- total_data = total_data %>% mutate( -->
+<!--   patient = as.factor(patient) -->
+<!--   ) -->
+<!-- ``` -->
+
+
+<!-- ```{r} -->
+<!-- total_line = total_data%>% gam_total_nb_regress() -->
+
+<!-- plot(total_line, main = "Regression for all patients") -->
+<!-- ``` -->
+
+<!-- ### Q-Q plot for the model across all patients -->
+
+<!-- ```{r} -->
+<!--  qq.gam(total_line,rep=500) -->
+<!--  mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE) -->
+<!-- ``` -->
+
+<!-- ## Increase Smoothness -->
+
+<!-- By using negative binomial regression, we dealed with the problem of over-dispersion and got model with good fit. However those models were too wiggly. We wanted to increase the smoothness by log-transform $time$. -->
+
+
+
+
 
 - <span style="color:grey">Grey dots: the continuous data with blood sample collected by machine</span>
 - <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
@@ -620,9 +665,18 @@ table = cbind(patients, tmax, nrow) %>% as.tibble()
 colnames(table) = c("Patient", "Tmax", "Number_of_data")
 table
 ```
-### A model across all patients with log-transformed time
 
-We found the mean of tmax for all patients and added back tmax for all patients' data.
+These curves look much more like what we would expect them to look like!  And the QQ plots still appear to look good, shown below.
+
+
+GJM: The section above becomes a bit cluttered with all these plots together.  I think let's stick to only the colourful curves as for the other models above, and then perhaps show the QQ plots below in another section.  I've written a bit above to that end.
+
+
+## 4. A model across all patients
+
+Having resolved this issue of wiggliness, we wanted to improve our model further. Especially since our model is no longer shape-constrained, another way to incorporate more conservativism in the model is to model all the individuals at once in a hierarchical model.
+
+Firstly, we found the mean of tmax for all patients and added back tmax for all patients' data.
 
 ```{r}
 table = table %>% mutate(
@@ -652,8 +706,18 @@ total_data = total_data %>% mutate(
 ```
 
 ```{r}
-total_line = total_data%>% gam_total_nb_regress()
+gam_total_nb_regress = function(data = data){
+fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"),
+               offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
+               +(-log(parentFraction))+log(bpr)
+              ,family = nb(link = "log"),data = data,method="REML")
+return(fit_res)
+}
+
+total_line = total_data %>% gam_total_nb_regress()
 plot(total_line, main = "Regression for all patients")
 qq.gam(total_line,rep=500)
- mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+ mtext(paste0("Q-Q plot for all measurements"), side = 3, line = -1, outer = TRUE)
 ```
+
+GJM: For consistency, it would be nice to see plots like those you show above for the other models too. I think the QQ plot and individual smooths are so simple with one panel for everyone that it's worth keeping them, but I think it would be nice to show the individual predicted values to get an idea for whether this approach is underfitting the data.

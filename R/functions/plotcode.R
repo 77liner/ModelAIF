@@ -16,7 +16,6 @@ scope_whole <- function(count,x1, x2,legend = TRUE){
 }
 
 # plot residuals
-
 plot_rsd <-function(data,x1, x2){
   patient = data$patient
   rsd = data$rsd[[1]]

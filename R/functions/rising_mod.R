@@ -1,4 +1,4 @@
-library(segmented)
+# library(segmented)
 
 #conc=data$count_asc[1] %>% as.data.frame()
 # detect t0 and interpolate aif between t0 and tmax
@@ -6,7 +6,7 @@ library(segmented)
 # return data with t0 recorded, model result for finding t0, linear model result and predicted aif
 acs_inter <- function(conc){
   fit_lm = lm(aif ~ time, data = conc)  # intercept-only model
-  fit_segmented = segmented(fit_lm, seg.Z = ~time, npsi = 1)  # one change points along x
+  fit_segmented = segmented::segmented(fit_lm, seg.Z = ~time, npsi = 1)  # one change points along x
   t_0 = fit_segmented$psi[2] # t0
   # t0s are the same for aif and counts
   # fit_lm_count = lm(count ~ time, data = conc)  # intercept-only model

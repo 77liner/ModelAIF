@@ -32,6 +32,7 @@ library(data.table)
 library(scam)
 library(DT)
 library(ggplot2)
+library(kableExtra)
 ```
 
 We'll also load the model functions as well as some helper functions which we'll use along the way.
@@ -83,12 +84,12 @@ datatable(subject_1)
 - **Method** : there were two kinds of methods of drawing blood sample. One is automatically drawn and measured by an autosampler machine, named $Continuous$; the other is drawn manually, named $Discrete$.
 - **Count** : the number of recorded counts from the gamma counter.
 - **aif** : arterial input function estimated in the conventional manner.
-- **backg** : backgroud. The measuring instrument needs background correction, and this is the estimated background radioactivity (GJM: units? Counts/time?).
+- **backg** : backgroud. The measuring instrument needs background correction, and this is the estimated background radioactivity in count(GJM: units? Counts/time? LG: in count).
 - **bpr**: blood-to-plasma ratio. We were interested in the counts in plasma, however, the machine could only measure counts in blood. By measuring both radioactivity in plasma and blood in manual samples, we model blood-to-plasma ratio along with time. Then the bpr was used to correct samples collected by machine.
 - **ParentFraction** : The fraction of radioactivity originating from the parent compound, and not from radioactive daughter compounds (i.e. metabolites).
 - **dis_frc**: used for dispersion correction. Dispersion correction is calculated as a fraction multiplier for each time point using the original and corrected AIF radioactivity values. In this way, we incorporate dispersion correction into the count model.
 - **t_G** : time of measuring counts in plasma for manual samples/counts in blood for automatic samples (i.e. not of drawing the blood sample).
-- **vol** : volume of the blood sample. (GJM: I presume this is the volume of the plasma sample when it's plasma instead though, right?)
+- **vol** : volume of the plasma sample. (GJM: I presume this is the volume of the plasma sample when it's plasma instead though, right? LG: yes, it is volumn of plasma)
 - **delta** : duration for which the sample is in the gamma tube (i.e. longer duration results in more counts).
 - **tmax** : the time when AIF reaches the peak.
 - **disp_aif** : arterial input function after dispersion correction.
@@ -138,7 +139,7 @@ For regression of count data, we use offsets in the model to describe, for insta
 This is a bit complicated to follow. Let's break that down:
 
 - $delta$ : time in the gamma counter. $Counts$ were divided by $delta$ when we calculated $AIF$.
-- $vol$ : volume of the blood sample. $Counts$ were divided by $vol$ when we calculated $AIF$.
+- $vol$ : volume of the plasma sample. $Counts$ were divided by $vol$ when we calculated $AIF$.
 - $disp\_fct$ : dispersion correction
 - $-log(2)/20.364*t\_G$ : decay correction. The radio tracer in the blood or plasma would keep decaying. We need to correct it back to the time we want. The formula for decay correction : $A_t = A_0 * e ^{-\lambda t}$, where $A_0$ is the original activity count at time zero, $A_t$ is the activity at time $t$, $\lambda$ is the decay constant, and $t$ is the elapsed time.The decay constant is $\frac{ln(2)}{t_{1/2}}$ where $t_{1/2}$ is the half-life of the radioactive material of interest.
 - $(-log(0.003))+(-0.0807*vol)$ : volume calibration of the gamma counter. The formula for calibration : $Y = 0.037\times0.07756609407608\times exp^{0.080728586340915\times vol}$. $0.037$ is used for transforming units: 1 $picocurie$ $=$ 0.037 $Bq$. 
@@ -230,7 +231,7 @@ for (i in 1:nrow(pare_data)){
 
 For the non-parametric poisson regression, we used $SCAM$ function to achieve monotone decreasing smooths.  We also added a covariate to account for the discrepancy observed between discrete and continuous data.  
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 poisson_regress = function(data = data, k_value = 15){
 fit_res = scam(count ~ s(time,k = k_value, bs="mpd")+ Method, 
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
@@ -247,7 +248,7 @@ Following, we showed fitness for non-parametric poisson regression.
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric poisson regression model with index variable (Method). The dashed line shows the predicted values for the continuous data, while the solid line shows the predicted values for the discrete data. We consider the discrete data to represent the relevant data-generating process, and the continuous data is less reliable owing to some factor. In this study, it was speculated that the continuous sampler may have been placed too close to participants' bodies, resulting in extra counts´.</span>
 
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 
 for (i in 1:nrow(data)){
   patient = data$patient[i] 
@@ -354,7 +355,7 @@ Although the predicted value shows poisson regression model fits well, when we p
 
 - <span style="color:grey">Grey bands: the reference bands </span>
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
 
@@ -372,7 +373,7 @@ for (i in 1:nrow(data)){
 
 To resolve the problem of over-dispersion, we changed poisson distribution to negative binomial distribution. Because the $SCAM$ package does not support negative binomial distribution, we also changed the function to $GAM$ from the `mgcv` package.  However, this means that our non-parametric model is no longer shape-constrained.
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 gam_nb_regress = function(data = data,k_value = 15){
 fit_res = gam(count ~ s(time,k = k_value)+Method, 
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
@@ -387,7 +388,7 @@ return(fit_res)
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
 
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
@@ -490,7 +491,7 @@ for (i in 1:nrow(data)){
 
 - <span style="color:grey">Grey bands: the reference bands </span>
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
 
@@ -568,7 +569,7 @@ To this end, we log-transformed time within the model in order to distribute the
 - <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 tmax = c() 
 nrow = c()
 patients = c()
@@ -590,15 +591,13 @@ for(i in 1:nrow(data)){
   plot_line = time_data %>% gam_nb_regress()
   
   # plot of the model
- par(mfrow = c(1,1))
-   plot(plot_line,
-       shade=F, # confidence bands for smooth
-       se=F,
-       lwd = 1.5,
-      main = paste0("Regression for patient:", patient))
-   # Q-Q plot
-  qq.gam(plot_line,rep=500)
- mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+#par(mfrow = c(1,1))
+#   plot(plot_line,
+#       shade=F, # confidence bands for smooth
+#       se=F,
+#       lwd = 1.5,
+#      main = paste0("Regression for patient:", patient))
+
   
   # plot of predicted value
   time = time_data$time
@@ -660,16 +659,49 @@ for(i in 1:nrow(data)){
   
 
 }
-
-table = cbind(patients, tmax, nrow) %>% as.tibble()
-colnames(table) = c("Patient", "Tmax", "Number_of_data")
-table
 ```
 
 These curves look much more like what we would expect them to look like!  And the QQ plots still appear to look good, shown below.
 
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
+table = cbind(patients, tmax, nrow) %>% as.tibble()
+colnames(table) = c("Patient", "Tmax", "Number_of_data")
+table%>%knitr::kable(
+  caption = "Tmax for each patient",
+  align = "lcc"
+)%>%
+  kable_classic_2()
+```
+
 
 GJM: The section above becomes a bit cluttered with all these plots together.  I think let's stick to only the colourful curves as for the other models above, and then perhaps show the QQ plots below in another section.  I've written a bit above to that end.
+
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
+for(i in 1:nrow(data)){
+   patient = data$patient[i] 
+
+  patient_data = data$count_dsc[i]%>% as.data.frame()%>% mutate(
+                      tmax = as.numeric(tmax),
+                      time = as.numeric(time)
+                      )
+  patient_tmax = mean(patient_data$tmax)
+  number = nrow(patient_data)
+  patients = rbind(patients,patient)
+  tmax = rbind(tmax, patient_tmax)
+  nrow = rbind(nrow,number)
+  # transform time : time =ln(time + tmax)
+  time_data = patient_data %>% mutate(time = log(time+tmax))
+  
+  plot_line = time_data %>% gam_nb_regress()
+  
+     # Q-Q plot
+  qq.gam(plot_line,rep=500)
+ mtext(paste0("Q-Q plot for patient:", patient), side = 3, line = -1, outer = TRUE)
+  
+  
+}
+```
+
 
 
 ## 4. A model across all patients
@@ -678,7 +710,7 @@ Having resolved this issue of wiggliness, we wanted to improve our model further
 
 Firstly, we found the mean of tmax for all patients and added back tmax for all patients' data.
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 table = table %>% mutate(
   Tmax = as.numeric(Tmax),
   Number_of_data = as.numeric(Number_of_data),
@@ -688,7 +720,7 @@ table = table %>% mutate(
 mean_tmax = sum(table$sum)/sum(table$Number_of_data)
 ```
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 total_data = data_frame()
 
 for(i in 1:nrow(data)){
@@ -705,7 +737,7 @@ total_data = total_data %>% mutate(
 
 ```
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 gam_total_nb_regress = function(data = data){
 fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"),
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+(-log(0.003))+(-0.0807*vol)
@@ -721,3 +753,74 @@ qq.gam(total_line,rep=500)
 ```
 
 GJM: For consistency, it would be nice to see plots like those you show above for the other models too. I think the QQ plot and individual smooths are so simple with one panel for everyone that it's worth keeping them, but I think it would be nice to show the individual predicted values to get an idea for whether this approach is underfitting the data.
+
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
+patient_list = data$patient %>% as.list()
+
+bind_data = total_data %>% select(patient, Method, time, disp_aif)
+fitted = log(total_line$fitted.values)
+offset = total_line$offset
+
+
+df = cbind(bind_data, fitted, offset) %>% as.data.frame() %>% mutate(
+    fitted = as.numeric(fitted),
+    offset = as.numeric(offset),
+    aif = fitted-offset
+  )
+ 
+for(i in 1:10){
+  patient_data = df %>% filter(patient == patient_list[[i]])
+  patient = data$patient[i]
+ 
+  con_df = patient_data %>% filter(Method == "Continuous")
+  dis_df = patient_data %>% filter(Method == "Discrete")
+
+  
+  par(mfrow = c(1,1))
+  plot(con_df$time, log(con_df$disp_aif), col= "grey",
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = paste0("Regression for patient:", patient))
+  legend(3,5,c("Continuous data"), text.col = "grey",bty = "n")
+  
+  # plot of discrete data
+  par(new = TRUE)
+  plot(dis_df$time, log(dis_df$disp_aif), col= "red",
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = "")
+  legend(3,4.5,c("Discrete data"), text.col = "red",bty = "n")
+  # plots of non-parametric regression
+  
+    par(new = TRUE)
+  plot(con_df$time,con_df$aif,
+       type = "l",lty = 2, col = "darkgreen", lwd = 2,
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(3,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+    par(new = TRUE)
+  plot(dis_df$time,dis_df$aif,
+       type = "l", col = "darkgreen", lwd = 2,
+       xlab = "log(time)",
+       ylab = "log(AIF)",
+       xlim = c(-1,5),
+       ylim = c(-2,5),
+       main = ""
+       )
+  legend(3,4,c("Predicted value"), text.col = "darkgreen",bty = "n")
+  
+
+}
+```
+
+
+

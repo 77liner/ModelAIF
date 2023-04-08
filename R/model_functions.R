@@ -4,6 +4,7 @@ kinfitr_gnm <- function(t, # sampling time
                         y.sum,  # count or concentration 
                         delta, # measure time in gamma counter
                         vol, # volume
+                        calibration, # calibration of units and volumes
                         decay_corrected = TRUE, # concentration decay corrected?
                         meta_corrected = TRUE, # concentration metabolism corrected?
                         pf = NULL, # fitted parent fractions. Later can be changed to a vector of parameters of the parent fraction function
@@ -12,7 +13,7 @@ kinfitr_gnm <- function(t, # sampling time
   # if input has been decay corrected
   if(decay_corrected == TRUE & !is.null(t_G)){
     # fit the model count ~ -1 + offset(log(delta)) + offset(log(vol)) + offset(-log(2)/20.364*t_G) + log_sum_exp(t) + offset(-log(0.003)*rep(1,length(t))) # calibration
-    model_res = gnm_prop(t,t_G,y.sum,pf = rep(1,length(t)),bpr=rep(1,length(t)),disp,delta,vol)
+    model_res = gnm_prop(t,t_G,y.sum, calibration=calibration, pf = rep(1,length(t)),bpr=rep(1,length(t)),disp,delta,vol)
   } else {
     # if decay corrected indicator is not
     if(decay_corrected == FALSE){
@@ -32,7 +33,7 @@ kinfitr_gnm <- function(t, # sampling time
     # + offset(-log(0.003)*rep(1,length(t))) # calibration
     # + offset(-log(pf))# metabolism uncorrection
     # + log_sum_exp(t) # sum of exponential term
-    model_res = gnm_prop(t,t_G,y.sum,pf=pf,bpr=rep(1,length(t)),disp,delta,vol)
+    model_res = gnm_prop(t,t_G,y.sum,calibration=calibration, pf=pf,bpr=rep(1,length(t)),disp,delta,vol)
     
     #### add other parent fraction function
   } else if (meta_corrected == TRUE){
@@ -99,16 +100,19 @@ class(log_sum_exp) <- "nonlin"
 
 
 # do gnm regression and return model results
-gnm_mod1 <- function(t,t_G,y.sum,pf,bpr,disp,delta = delta,vol=vol, props = c(1/6,1/2),seed = 1,calibration){
+gnm_mod1 <- function(t,t_G,y.sum,calibration,pf,bpr,disp,delta = delta,vol=vol, props = c(1/6,1/2),seed = 1){
   # find appropraite starting values
   start_val = initial_para(t,y.sum, props)
   set.seed(seed)
   #Add decay correction, metabolism correction
-  fit_res = gnm(y.sum ~ -1 + offset(log(delta)) + offset(log(vol)) + offset(log(disp)) + offset(-log(2)/20.364*t_G)# decay correction
-                + offset(-log(calibration)*rep(1,length(t))) + # calibration of the machine
+  fit_res = gnm(y.sum ~ -1 + offset(log(delta)) + 
+                  offset(log(vol)) + 
+                  offset(log(disp)) + 
+                  offset(-log(2)/20.364*t_G) +# decay correction
+                  offset(-log(calibration)) + # calibration
                   offset(-log(pf))+# metabolism uncorrection
-                  offset(log(bpr))# blood to plasma ratio
-                + log_sum_exp(t),family = poisson(link = "log"),start = start_val)
+                  offset(log(bpr)) +# blood to plasma ratio
+                  log_sum_exp(t),family = poisson(link = "log"),start = start_val)
   return(fit_res)
   
 }
@@ -118,8 +122,8 @@ quiet_gnm_mod1 <- quietly(gnm_mod1)
 
 
 # sequentially find appropriate 
-gnm_prop <- function(t,t_G,y.sum,pf = NULL,bpr = NULL,disp,delta,vol, calibration = 0.003){
-  try_res = quiet_gnm_mod1(t,t_G,y.sum,pf = pf,bpr=bpr,disp=disp,delta,vol, calibration= calibration)
+gnm_prop <- function(t,t_G,y.sum,calibration,pf = NULL,bpr = NULL,disp,delta,vol){
+  try_res = quiet_gnm_mod1(t,t_G,y.sum,calibration=calibration, pf = pf,bpr=bpr,disp=disp,delta,vol)
   
   # if default (c(1/6,1/2)) not work, use cut c(1/60,1/10).
   props_new =c(1/60,1/10)
@@ -129,11 +133,11 @@ gnm_prop <- function(t,t_G,y.sum,pf = NULL,bpr = NULL,disp,delta,vol, calibratio
   }
   
   if(length(try_res$messages)!=0){
-    try_res = quiet_gnm_mod1(t,t_G,y.sum,pf=pf,bpr=bpr,disp=disp,delta,vol,props = c(1/90,6/90), calibration = calibration)
+    try_res = quiet_gnm_mod1(t,t_G,y.sum,calibration=calibration, pf=pf,bpr=bpr,disp=disp,delta,vol,props = c(1/90,6/90))
   }
   
   if(length(try_res$messages)!=0){
-    try_res = quiet_gnm_mod1(t,t_G,y.sum,pf=pf,bpr=bpr,disp=disp,delta,vol,props = c(1/3,2/3), calibration = calibration)
+    try_res = quiet_gnm_mod1(t,t_G,y.sum,calibration=calibration, pf=pf,bpr=bpr,disp=disp,delta,vol,props = c(1/3,2/3))
   }
   
   
@@ -141,13 +145,13 @@ gnm_prop <- function(t,t_G,y.sum,pf = NULL,bpr = NULL,disp,delta,vol, calibratio
   props_new =c(1/6,1/2)
   while (length(try_res$messages)!=0 & props_new[1]<1/3){
     props_new[1] = props_new[1]+0.01
-    try_res = quiet_gnm_mod1(t,t_G,y.sum,pf=pf,bpr=bpr,disp=disp,delta,vol,props = props_new, calibration= calibration)
+    try_res = quiet_gnm_mod1(t,t_G,y.sum,calibration=calibration, pf=pf,bpr=bpr,disp=disp,delta,vol,props = props_new)
   }
   # If still not working, try (1/3,n) where 1/2<n<2/3
   props_new1 =c(1/3,1/2)
   while (length(try_res$messages)!=0 & props_new1[2]<2/3){
     props_new1[2] = props_new1[2]+0.01
-    try_res = quiet_gnm_mod1(t,t_G,y.sum,pf=pf,bpr=bpr,disp=disp,delta,vol,props = props_new1, calibration= calibration)
+    try_res = quiet_gnm_mod1(t,t_G,y.sum,calibration=calibration, pf=pf,bpr=bpr,disp=disp,delta,vol,props = props_new1)
   }
   return(try_res)
 }

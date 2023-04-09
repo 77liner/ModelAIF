@@ -69,8 +69,6 @@ In this approach, we model the input function using the original count data, i.e
 
 In the data below, then, there will both be count data, as well as processed data generated using the counts data converted to radioactivity.  The strategy of this model is to make use of the counts data to allow a us to model the data with a more correct error distribution, but this requires first processing the data in a more conventional manner, and using the counts once again when applying the model itself.
 
-GJM: I think it's worth spending a little bit of time before here discussing how the BPR, dispersion correction and AIF columns are all based on conventional modelling of the data, i.e. after transforming the counts to radioactivity and doing all the conventional corrections, rather than being with the counts directly. We basically do all the conventional things with the blood data in radioactivity units (i.e. after being corrected from counts), and then when it comes time to model the data, then we use the raw counts again.  I think it's important to explain this just so that readers understand *why* the data have all these columns etc, many of which are related to the radioactivity and not the counts, which they thought were going to be the main focus.  I've quickly written a short approximate description above.  Do feel free to revise it and customise as you desire.
-
 
 ## Example Data
 
@@ -708,7 +706,7 @@ These curves look much more like what we would expect them to look like!
 
 And the QQ plots still appear to look good, shown below.
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 tmax = c() 
 nrow = c()
 patients = c()
@@ -744,7 +742,7 @@ for(i in 1:nrow(data)){
 
 ### Figure
 
-```{r, fig.height=5, fig.width=6}
+```{r, fig.height=5, fig.width=6, message = FALSE, warning=FALSE, echo=FALSE}
 create_preds <- function(data, patient_id) {
   
   patdat <- data %>% 
@@ -894,7 +892,7 @@ qq.gam(total_line,rep=500)
 
 GJM: For consistency, it would be nice to see plots like those you show above for the other models too. I think the QQ plot and individual smooths are so simple with one panel for everyone that it's worth keeping them, but I think it would be nice to show the individual predicted values to get an idea for whether this approach is underfitting the data.
 
-```{r, message=FALSE}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 create_preds_hgam <- function(data, patient_id) {
   
   patdat <- total_data %>% 
@@ -998,7 +996,7 @@ pmap(list(total_preddata$patient,
 
 ### First and last samples
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1105,7 +1103,7 @@ ggsave(extrap_fl, filename = "../Figures/Extrap_fl.png", width = 6, height=5)
 
 ### Last samples
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1213,7 +1211,7 @@ ggsave(extrap_ll, filename = "../Figures/Extrap_ll.png", width = 6, height=5)
 
 ### First samples
 
-```{r}
+```{r, message = FALSE, warning=FALSE, echo=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1322,7 +1320,7 @@ ggsave(extrap_ff, filename = "../Figures/Extrap_ff.png", width = 6, height=5)
 
 ### Figure
 
-```{r, fig.height=3, fig.width=6}
+```{r, fig.height=3, fig.width=6, message = FALSE, warning=FALSE, echo=FALSE}
 set.seed(12345)
 
 measurements <- sample(unique(total_data$patient), 4, replace=F)

@@ -265,7 +265,7 @@ for (i in 1:nrow(pare_data)){
 
 For the non-parametric poisson regression, we used $SCAM$ function to achieve monotone decreasing smooths.  We also added a covariate to account for the discrepancy observed between discrete and continuous data.  
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 poisson_regress = function(data = data, k_value = 15){
 fit_res = scam(count ~ s(time,k = k_value, bs="mpd")+ Method, 
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+
@@ -283,7 +283,7 @@ Following, we showed fitness for non-parametric poisson regression.
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric poisson regression model with index variable (Method). The dashed line shows the predicted values for the continuous data, while the solid line shows the predicted values for the discrete data. We consider the discrete data to represent the relevant data-generating process, and the continuous data is less reliable owing to some factor. In this study, it was speculated that the continuous sampler may have been placed too close to participants' bodies, resulting in extra counts´.</span>
 
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 
 for (i in 1:nrow(data)){
   patient = data$patient[i] 
@@ -390,7 +390,7 @@ Although the predicted value shows poisson regression model fits well, when we p
 
 - <span style="color:grey">Grey bands: the reference bands </span>
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
 
@@ -408,7 +408,7 @@ for (i in 1:nrow(data)){
 
 To resolve the problem of over-dispersion, we changed poisson distribution to negative binomial distribution. Because the $SCAM$ package does not support negative binomial distribution, we also changed the function to $GAM$ from the `mgcv` package.  However, this means that our non-parametric model is no longer shape-constrained.
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 gam_nb_regress = function(data = data,k_value = 15){
 fit_res = gam(count ~ s(time,k = k_value)+Method, 
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+
@@ -424,7 +424,7 @@ return(fit_res)
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
 
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
@@ -527,7 +527,7 @@ for (i in 1:nrow(data)){
 
 - <span style="color:grey">Grey bands: the reference bands </span>
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 for (i in 1:nrow(data)){
    patient = data$patient[i] 
 
@@ -607,7 +607,7 @@ To this end, we log-transformed time within the model in order to distribute the
 - <span style="color:red">Red dots: the discrete data with blood sample collected by experimenters</span>
 - <span style="color:darkgreen">Green line: the predicted value for non-parametric negative binomial regression model with index variable (Method)</span>
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 tmax = c() 
 nrow = c()
 patients = c()
@@ -706,7 +706,7 @@ These curves look much more like what we would expect them to look like!
 
 And the QQ plots still appear to look good, shown below.
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 tmax = c() 
 nrow = c()
 patients = c()
@@ -742,7 +742,7 @@ for(i in 1:nrow(data)){
 
 ### Figure
 
-```{r, fig.height=5, fig.width=6, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, fig.height=5, fig.width=6, message = FALSE, warning=FALSE}
 create_preds <- function(data, patient_id) {
   
   patdat <- data %>% 
@@ -847,7 +847,7 @@ Having resolved this issue of wiggliness, we wanted to improve our model further
 
 Firstly, we found the mean of tmax for all patients and added back tmax for all patients' data.
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 table = table %>% mutate(
   Tmax = as.numeric(Tmax),
   Number_of_data = as.numeric(Number_of_data),
@@ -857,7 +857,7 @@ table = table %>% mutate(
 mean_tmax = sum(table$sum)/sum(table$Number_of_data)
 ```
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 total_data = data_frame()
 
 for(i in 1:nrow(data)){
@@ -874,7 +874,7 @@ total_data = total_data %>% mutate(
 
 ```
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 gam_total_nb_regress = function(data = data){
 fit_res = gam(count ~ Method*patient+patient+s(time,k = 20)+s(time, patient, k=5, bs="fs"),
                offset = log(delta)+log(vol)+log(disp_fct)+(-log(2)/20.364*t_G)+
@@ -892,7 +892,7 @@ qq.gam(total_line,rep=500)
 
 GJM: For consistency, it would be nice to see plots like those you show above for the other models too. I think the QQ plot and individual smooths are so simple with one panel for everyone that it's worth keeping them, but I think it would be nice to show the individual predicted values to get an idea for whether this approach is underfitting the data.
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 create_preds_hgam <- function(data, patient_id) {
   
   patdat <- total_data %>% 
@@ -996,7 +996,7 @@ pmap(list(total_preddata$patient,
 
 ### First and last samples
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1103,7 +1103,7 @@ ggsave(extrap_fl, filename = "../Figures/Extrap_fl.png", width = 6, height=5)
 
 ### Last samples
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1211,7 +1211,7 @@ ggsave(extrap_ll, filename = "../Figures/Extrap_ll.png", width = 6, height=5)
 
 ### First samples
 
-```{r, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, message = FALSE, warning=FALSE}
 gam_total_nb_regress_missing = function(data = data, extrap_meas, total_mod){
   
   total_data <- data %>% 
@@ -1320,7 +1320,7 @@ ggsave(extrap_ff, filename = "../Figures/Extrap_ff.png", width = 6, height=5)
 
 ### Figure
 
-```{r, fig.height=3, fig.width=6, message = FALSE, warning=FALSE, echo=FALSE}
+```{r, fig.height=3, fig.width=6, message = FALSE, warning=FALSE}
 set.seed(12345)
 
 measurements <- sample(unique(total_data$patient), 4, replace=F)

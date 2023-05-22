@@ -1,14 +1,3 @@
----
-title: "ModelAIF_Demonstration"
-author: "Liner Ge"
-date: "7/7/2022"
-output: 
-  html_document:
-    code_folding: hide
-    toc: true
-    toc_float: true
-    theme: cerulean
----
 
 # Aims
 
@@ -19,8 +8,7 @@ Here I aim to demonstrate the use of our work to model the arterial input functi
 
 ## Libraries
 
-
-```{r setup, include=FALSE}
+```{r}
 knitr::opts_chunk$set(echo = TRUE)
 library(tidyverse)
 library(knitr)

@@ -2,12 +2,16 @@
 title: "ModelAIF_Demonstration"
 author: "Liner Ge"
 date: "7/7/2022"
-output: 
+always_allow_html: true
+output:
+  github_document:
+     toc: true
+     
   html_document:
-    code_folding: hide
     toc: true
     toc_float: true
     theme: cerulean
+  
 ---
 
 # Aims

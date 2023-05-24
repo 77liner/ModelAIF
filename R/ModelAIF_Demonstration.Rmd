@@ -2,10 +2,7 @@
 title: "ModelAIF_Demonstration"
 author: "Liner Ge"
 date: "7/7/2022"
-always_allow_html: true
 output:
-  github_document:
-     toc: yes
   html_document:
     code_folding: hide
     toc: yes
@@ -83,6 +80,7 @@ We'll start out by looking at one of the individuals within the dataset.  The da
 subject_1 = data$count[1]%>% 
   as.data.frame()
 
+datatable(subject_1)
 ```
 
 - **Time** : time of drawing blood sample (i.e. not of measurement of radioactivity).
